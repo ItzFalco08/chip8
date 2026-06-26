@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.14)
+set(C_STANDARD 20)
+set(CXX_STANDARD 20)
+
+set(SRC_FILES src/main.cpp)
+
+project(chip8emulator)
+
+# Set output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# SDL options - disable extras
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(third_party/SDL)
+add_subdirectory(third_party/glad)
+add_subdirectory(third_party/imgui)
+
+# Create executable
+add_executable(chip8emulator ${SRC_FILES})
+
+# libraries
+target_link_libraries(chip8emulator PRIVATE SDL3::SDL3 glad imgui)
+target_include_directories(chip8emulator PRIVATE ${SDL3_INCLUDE_DIRS})
