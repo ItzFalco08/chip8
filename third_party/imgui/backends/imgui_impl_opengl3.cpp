@@ -525,7 +525,7 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
     // Setup render state structure (for callbacks and custom texture bindings)
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     ImGui_ImplOpenGL3_RenderState render_state;
-    render_state.UseBindSampler = bd->HasBindSampler;
+    render_state.UseBindSampler = false;
     render_state.UseTexParameterFilter = false;
     render_state.CurrentSampler = 0;
     render_state.CurrentTexParameterFilter = 0;

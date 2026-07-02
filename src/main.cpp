@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cstdint>
 #include <cstring>
+#include <random>
 #include "glad/gl.h"
 #include "SDL3/SDL.h"
 #include <SDL3/SDL_opengl.h>
@@ -11,33 +12,40 @@
 #include "backends/imgui_impl_sdl3.h"
 
 // globals
-int scale = 20; // pixel scale
-constexpr size_t fb_x = 64;
-constexpr size_t fb_y = 32;
+int scale = 10; // pixel scale
+const int fb_x = 64;
+const int fb_y = 32;
 
-constexpr uint8_t sprites[] = {
-    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-    0x20, 0x60, 0x20, 0x20, 0x70, // 1
-    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-    0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+constexpr double cpuHz = 1.0;
+constexpr double cpuStep = 1.0 / cpuHz;
+
+struct fontchar_t {
+    uint8_t charData[5];
+};
+
+const fontchar_t sprites[] = {
+    {0xF0, 0x90, 0x90, 0x90, 0xF0}, // 0
+    {0x20, 0x60, 0x20, 0x20, 0x70}, // 1
+    {0xF0, 0x10, 0xF0, 0x80, 0xF0}, // 2
+    {0xF0, 0x10, 0xF0, 0x10, 0xF0}, // 3
+    {0x90, 0x90, 0xF0, 0x10, 0x10}, // 4
+    {0xF0, 0x80, 0xF0, 0x10, 0xF0}, // 5
+    {0xF0, 0x80, 0xF0, 0x90, 0xF0}, // 6
+    {0xF0, 0x10, 0x20, 0x40, 0x40}, // 7
+    {0xF0, 0x90, 0xF0, 0x90, 0xF0}, // 8
+    {0xF0, 0x90, 0xF0, 0x10, 0xF0}, // 9
+    {0xF0, 0x90, 0xF0, 0x90, 0x90}, // A
+    {0xE0, 0x90, 0xE0, 0x90, 0xE0}, // B
+    {0xF0, 0x80, 0x80, 0x80, 0xF0}, // C
+    {0xE0, 0x90, 0x90, 0x90, 0xE0}, // D
+    {0xF0, 0x80, 0xF0, 0x80, 0xF0}, // E
+    {0xF0, 0x80, 0xF0, 0x80, 0x80}  // F
 };
 
 void read_instructions(const char* path, uint8_t* fileData) {
     // read rom.ch8
     std::ifstream file(path, std::ios::binary);
-    if(!file) {std::cout << "failed to open file\n" << std::endl;};
+    if(!file) {throw std::runtime_error("failed to open file");};
     file.seekg(0, std::ios::end);
     size_t size = file.tellg();
     file.seekg(0, std::ios::beg);
@@ -50,10 +58,10 @@ void read_instructions(const char* path, uint8_t* fileData) {
     file.read(reinterpret_cast<char*>(fileData), size);
 }
 
-class chipstate_t {
+struct chipstate_t {
     // cpu
     uint8_t registers[16] = {}; // V0 - VF registers
-    uint16_t index {}; // index register
+    uint16_t I {}; // index register
 
     uint8_t dt {}, st {};
 
@@ -66,7 +74,10 @@ class chipstate_t {
     bool fb[fb_x * fb_y] = {}; // display ( 64x32 pixels )
     uint8_t memory[4096] = {}; // 4096 bytes of addressable memory ( 1 byte unit )
 
-public:
+    // keyboard
+    bool keys[16] = {};
+
+private:
     uint8_t read8(uint16_t adr) {
         return memory[adr & 0xFFF];
     }
@@ -75,16 +86,219 @@ public:
         memory[adr & 0xFFF] = data;
     }
 
-    void run(std::vector<uint8_t>& instructions) {
-        for(uint8_t& byte: instructions) {
-            printf("%x ", byte);
-        }
-        printf("\n\n Nr Bytes: %i", instructions.size());
-    };
-
+public:
     void init(const char* rom) {
         read_instructions(rom, &memory[0x200]);
         memcpy(&memory[0], &sprites[0], 80);
+    }
+
+    void step() {
+        // run one instruction
+        uint16_t opcode = memory[pc] << 8 | memory[pc + 1]; 
+        pc += 2;
+
+        uint8_t op = opcode >> 12; // first nibble
+        uint8_t x = (opcode >> 8) & 0xF; // second nibble
+        uint8_t y = (opcode >> 4) & 0xF; // third nibble
+        uint8_t n = opcode & 0xF; // fourth nibble
+        uint8_t kk = opcode & 0xFF; // last 2 nibble
+        uint16_t nnn = opcode & 0xFFF; // last 3 nibble
+
+        switch (op)
+        {
+        case 0x0:
+            if(y == 0xE && n == 0x0) {
+                memset(fb, 0, sizeof(fb));
+            } else if (y == 0xE && n == 0xE) {
+                pc = stack[--sp];
+            }
+            break;
+        
+        case 0x1:
+            pc = nnn;
+            break;
+
+        case 0x2:
+            stack[sp++] = pc;
+            pc = nnn;
+            break;
+
+        case 0x3:
+            if (registers[x] == kk) pc+=2;
+            break;
+
+        case 0x4:
+            if (registers[x] != kk) pc+=2;
+            break;
+        
+        case 0x5:
+            if(x == y) pc+=2;
+            break;
+        
+        case 0x6:
+            registers[x] = kk;
+            break;
+
+        case 0x7:
+            registers[x] += kk;
+            break;
+
+        case 0x8: {
+
+            uint8_t &vx = registers[x];
+            uint8_t &vy = registers[y];
+
+            if (n == 0x0) {
+                vx = vy;
+            } else if (n == 0x1) {
+                vx |= registers[y];
+            } else if (n == 0x2) {
+                vx &= registers[y];
+            } else if (n == 0x3) {
+                vx ^= vy;
+            } else if (n == 0x4) {
+                vx += vy;
+            } else if (n == 0x5) {
+                registers[0xF] = vx >= vy ? 1 : 0;
+                vx -= vy;
+            } else if (n == 0x6) { 
+                registers[0xF] = vx & 0x1;
+                vx >>= 1;
+            } else if (n == 0x7) {
+                registers[0xF] = vx >= vy ? 1 : 0;
+                vx = vy - vx;
+            } else if (n == 0xE) {
+                registers[0xF] = vx & 0x1;
+                vx *= 2;
+            }
+            break;
+        }
+
+        case 0x9:
+            if (registers[x] != registers[y]) pc+=2;
+        
+        case 0xA:
+            I = nnn;
+        
+        case 0xB:
+            pc = nnn + registers[0];        
+        
+        case 0xC: {
+            static std::random_device rd;
+            static std::mt19937 gen(rd());
+            static std::uniform_int_distribution<int> distrib;
+            uint8_t rndu8 = static_cast<uint8_t>(distrib(gen));
+            registers[x] = rndu8 & kk;
+            break;
+        }
+        case 0xD: {
+            uint8_t& vx = registers[x];
+            uint8_t& vy = registers[y];
+            
+            registers[0xf] = 0;
+            for (int y = 0; y < n; ++y) {
+                uint8_t src = memory[I + y];
+                for (int x = 0; x < 8; x++) {
+                    int px = (vx + x) % fb_x;
+                    int py = (vy + y) % fb_y;
+
+                    bool& fbbit = fb[px + py * fb_x];
+                    uint8_t drawbit = ((src >> (7-x)) & 0x1);
+                    
+                    if(fbbit == 1 && drawbit == 1) registers[0xf] = 1;
+                    fbbit ^= drawbit;
+                }
+            }
+            break;
+        }
+
+        case 0xE:
+            if (kk == 0x9E) {
+                if(keys[x]) pc += 2;
+            } else if (kk = 0xA1) {
+                if(!keys[x]) pc += 2;
+            }
+        
+        case 0xF:
+            if (kk == 0x07) {
+
+            } else if (kk == 0x0A) {
+
+            } else if (kk == 0x15) {
+
+            } else if (kk == 0x18) {
+
+            } else if (kk == 0x1E) {
+
+            }
+            break;
+
+        default:
+            printf("failed to execute instruction %x", opcode);
+            break;
+        }
+    };
+
+};
+
+struct gldisplaytexture_t  {
+    uint32_t m_id = 0;
+    int m_width = 0;
+    int m_height = 0;
+
+    gldisplaytexture_t() = default;
+    gldisplaytexture_t(const gldisplaytexture_t&) = delete;
+    gldisplaytexture_t& operator=(const gldisplaytexture_t&) = delete;
+
+    gldisplaytexture_t(gldisplaytexture_t&& other) noexcept {
+        m_id = other.m_id;
+        m_width = other.m_width;
+        m_height = other.m_height;
+        other.m_id = 0;
+        other.m_width = 0;
+        other.m_height = 0;
+    }
+
+    gldisplaytexture_t& operator=(gldisplaytexture_t&& other) noexcept {
+        if (this == &other) return *this;
+        if (m_id != 0) glDeleteTextures(1, &m_id);
+        m_id = other.m_id;
+        m_width = other.m_width;
+        m_height = other.m_height;
+        other.m_id = 0;
+        other.m_width = 0;
+        other.m_height = 0;
+        return *this;
+    }
+
+    gldisplaytexture_t(int width, int height): m_width(width), m_height(height) {
+        glGenTextures(1, &m_id);
+        glBindTexture(GL_TEXTURE_2D, m_id);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA8,
+            m_width,
+            m_height,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            nullptr
+        );
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    void update(const uint32_t* buffer) {
+        glBindTexture(GL_TEXTURE_2D, m_id);
+        glTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, buffer );
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    ~gldisplaytexture_t() {
+        if (m_id != 0) glDeleteTextures(1, &m_id);
     }
 };
 
@@ -94,12 +308,12 @@ class EmuApp {
     SDL_Window* window = nullptr;
     ImGuiIO io;
     bool running = true;
-    bool show_demo_window = true;
-    bool show_another_window = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    gldisplaytexture_t display_texture;
+
 public:
     void run() {
-        const char* rom = "rom.ch8";
+        const char* rom = "Pong.ch8";
         chipState.init(rom);
 
         init_window();
@@ -137,7 +351,9 @@ private:
         // glad
         if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) { throw "Failed to initialize GLAD"; }
 
+        display_texture = gldisplaytexture_t(fb_x, fb_y);
     }
+
     void init_imgui() {
         // imgui
         IMGUI_CHECKVERSION();
@@ -147,17 +363,42 @@ private:
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
         init_imgui_theme();
 
-        // backends    
+        // backends
         ImGui_ImplSDL3_InitForOpenGL(window, glContext);
-        ImGui_ImplOpenGL3_Init("#version 300 es");
+        ImGui_ImplOpenGL3_Init("#version 330 core");
     }
+
     void main_loop() noexcept {
         while (running) {
             // sdl events
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 ImGui_ImplSDL3_ProcessEvent(&event);
-                if (event.type == SDL_EVENT_QUIT) running = false;
+
+                switch (event.type)
+                {
+                case SDL_EVENT_QUIT:
+                    running = false;
+                    break;
+                
+                case SDL_EVENT_KEY_DOWN: {
+                    uint8_t k_code = mapKey(event.key.key);
+                    if(k_code != -1) {
+                        chipState.keys[k_code] = true;
+                    }
+                    break;
+                }
+
+                case SDL_EVENT_KEY_UP: {
+                    uint8_t k_code = mapKey(event.key.key);
+                    if (k_code != -1) {
+                        chipState.keys[k_code] = false;                        
+                    }
+                    break;
+                }
+                default:
+                    break;
+                }
             }
 
             glClear(GL_COLOR_BUFFER_BIT);
@@ -168,7 +409,8 @@ private:
             ImGui::NewFrame();
 
             // draw
-            ImGui::ShowDemoWindow(&show_demo_window);
+            execute_program();
+            draw_imgui();
             
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -182,6 +424,42 @@ private:
     }
 
     // helpers
+    double last = 0.0;
+
+    double cpu_accumulated_time = 0.0;
+
+    void execute_program() {
+        if (last == 0.0) last = SDL_GetTicks() / 1000.0;
+        double cur = SDL_GetTicks() / 1000.0;
+        double dt = cur - last;
+        last = cur;
+        cpu_accumulated_time += dt;
+
+        while (cpu_accumulated_time > cpuStep) {
+            chipState.step();
+            cpu_accumulated_time -= cpuStep;
+        }
+    }
+
+    void draw_imgui() {        
+        int display_w = scale * fb_x;
+        int display_h = scale * fb_y;
+
+        // draw chip8 framebuffer as ImGui::Image
+        uint32_t fbRGBA[fb_x * fb_y];
+        for (int i = 0; i < fb_x * fb_y; ++i) {
+            fbRGBA[i] = chipState.fb[i] ? 0xFFFFFFFF : 0xFF000000;
+        }
+        display_texture.update(&fbRGBA[0]);
+        
+        ImGui::SetNextWindowSize(ImVec2(display_w, display_h + ImGui::GetFrameHeight()));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::Begin("Display", nullptr, ImGuiWindowFlags_NoResize);
+        ImGui::PopStyleVar();
+        ImGui::Image((ImTextureID)(intptr_t)display_texture.m_id, ImVec2(scale * fb_x, display_h));
+        ImGui::End();
+    };
+
     void init_imgui_theme() {
         // Excellency style by gonzaloivan121 from ImThemes
         ImGuiStyle& style = ImGui::GetStyle();
@@ -270,6 +548,34 @@ private:
         style.Colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.0f, 1.0f, 1.0f, 0.7f);
         style.Colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.8f, 0.8f, 0.8f, 0.2f);
         style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.8f, 0.8f, 0.8f, 0.35f);
+    }
+
+    int mapKey(SDL_Keycode key)
+    {
+        switch (key)
+        {
+            case SDLK_1: return 0x1;
+            case SDLK_2: return 0x2;
+            case SDLK_3: return 0x3;
+            case SDLK_4: return 0xC;
+
+            case SDLK_Q: return 0x4;
+            case SDLK_W: return 0x5;
+            case SDLK_E: return 0x6;
+            case SDLK_R: return 0xD;
+
+            case SDLK_A: return 0x7;
+            case SDLK_S: return 0x8;
+            case SDLK_D: return 0x9;
+            case SDLK_F: return 0xE;
+
+            case SDLK_Z: return 0xA;
+            case SDLK_X: return 0x0;
+            case SDLK_C: return 0xB;
+            case SDLK_V: return 0xF;
+
+            default: return -1;
+        }
     }
 };
 
