@@ -16,8 +16,13 @@ int scale = 10; // pixel scale
 const int fb_x = 64;
 const int fb_y = 32;
 
-constexpr double cpuHz = 1.0;
+constexpr double cpuHz = 700.0;
+constexpr double stdtHz = 60.0;
 constexpr double cpuStep = 1.0 / cpuHz;
+constexpr double stdtStep = 1.0 / stdtHz;
+
+
+#define FONT_START 0x0
 
 struct fontchar_t {
     uint8_t charData[5];
@@ -50,10 +55,7 @@ void read_instructions(const char* path, uint8_t* fileData) {
     size_t size = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    if (size > (4096 - 0x200)) {
-        std::cout << "[PANIC] Rom size exceeds max limit";
-        return;
-    }
+    if (size > (4096 - 0x200)) throw std::runtime_error("[PANIC] Rom size exceeds max limit");
 
     file.read(reinterpret_cast<char*>(fileData), size);
 }
@@ -89,12 +91,16 @@ private:
 public:
     void init(const char* rom) {
         read_instructions(rom, &memory[0x200]);
-        memcpy(&memory[0], &sprites[0], 80);
+        memcpy(FONT_START + &memory[0], &sprites[0], 80);
+    }
+
+    uint16_t getopcode() {
+        return memory[pc] << 8 | memory[pc + 1];
     }
 
     void step() {
         // run one instruction
-        uint16_t opcode = memory[pc] << 8 | memory[pc + 1]; 
+        uint16_t opcode = getopcode();
         pc += 2;
 
         uint8_t op = opcode >> 12; // first nibble
@@ -132,7 +138,7 @@ public:
             break;
         
         case 0x5:
-            if(x == y) pc+=2;
+            if(registers[x] == registers[y]) pc+=2;
             break;
         
         case 0x6:
@@ -157,18 +163,20 @@ public:
             } else if (n == 0x3) {
                 vx ^= vy;
             } else if (n == 0x4) {
-                vx += vy;
+                int sum = vx + vy;
+                registers[0xf] = sum > 0xFF;
+                registers[x] = static_cast<uint8_t>(sum);
             } else if (n == 0x5) {
-                registers[0xF] = vx >= vy ? 1 : 0;
+                registers[0xF] = vx >= vy;
                 vx -= vy;
             } else if (n == 0x6) { 
                 registers[0xF] = vx & 0x1;
                 vx >>= 1;
             } else if (n == 0x7) {
-                registers[0xF] = vx >= vy ? 1 : 0;
+                registers[0xF] = vy >= vx;
                 vx = vy - vx;
             } else if (n == 0xE) {
-                registers[0xF] = vx & 0x1;
+                registers[0xF] = (vx >> 7);
                 vx *= 2;
             }
             break;
@@ -176,17 +184,20 @@ public:
 
         case 0x9:
             if (registers[x] != registers[y]) pc+=2;
-        
+            break;
+
         case 0xA:
             I = nnn;
-        
+            break;
+
         case 0xB:
             pc = nnn + registers[0];        
-        
+            break;
+
         case 0xC: {
             static std::random_device rd;
             static std::mt19937 gen(rd());
-            static std::uniform_int_distribution<int> distrib;
+            static std::uniform_int_distribution<int> distrib(0,255);
             uint8_t rndu8 = static_cast<uint8_t>(distrib(gen));
             registers[x] = rndu8 & kk;
             break;
@@ -197,7 +208,7 @@ public:
             
             registers[0xf] = 0;
             for (int y = 0; y < n; ++y) {
-                uint8_t src = memory[I + y];
+                uint8_t src = read8(I + y);
                 for (int x = 0; x < 8; x++) {
                     int px = (vx + x) % fb_x;
                     int py = (vy + y) % fb_y;
@@ -214,22 +225,48 @@ public:
 
         case 0xE:
             if (kk == 0x9E) {
-                if(keys[x]) pc += 2;
-            } else if (kk = 0xA1) {
-                if(!keys[x]) pc += 2;
+                if(keys[registers[x]]) pc += 2;
+            } else if (kk == 0xA1) {
+                if(!keys[registers[x]]) pc += 2;
             }
-        
+            break;
+
         case 0xF:
             if (kk == 0x07) {
-
+                registers[x] = dt;
             } else if (kk == 0x0A) {
-
+                bool found = false;
+                for(int i = 0; i < 16; ++i) {
+                    if (keys[i]) {
+                        registers[x] = i;
+                        found = true;
+                        break;
+                    }
+                }
+                if(!found) pc -= 2; 
+                break;
             } else if (kk == 0x15) {
-
+                dt = registers[x];
             } else if (kk == 0x18) {
-
+                st = registers[x];
             } else if (kk == 0x1E) {
-
+                I += registers[x];
+            } else if (kk == 0x29) {
+                I = FONT_START + registers[x] * 5;
+            } else if (kk == 0x33) {
+                write8(I, registers[x] / 100);
+                write8(I + 1, (registers[x] / 10) % 10);
+                write8(I + 2, registers[x] % 10);
+            } else if (kk == 0x55) {
+                for (int i = 0; i <= x; ++i) {
+                    write8(I + i, registers[i]);
+                }
+                I += x + 1;
+            } else if (kk == 0x65) {
+                for (int i = 0; i <= x; ++i) {
+                    registers[i] = read8(I + i);
+                }
+                I += x + 1;
             }
             break;
 
@@ -306,7 +343,6 @@ class EmuApp {
     chipstate_t chipState{};
     SDL_GLContext glContext{};
     SDL_Window* window = nullptr;
-    ImGuiIO io;
     bool running = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
     gldisplaytexture_t display_texture;
@@ -358,7 +394,7 @@ private:
         // imgui
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
-        io = ImGui::GetIO(); (void)io;
+        ImGuiIO& io = ImGui::GetIO(); (void)io;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
         init_imgui_theme();
@@ -382,7 +418,7 @@ private:
                     break;
                 
                 case SDL_EVENT_KEY_DOWN: {
-                    uint8_t k_code = mapKey(event.key.key);
+                    int k_code = mapKey(event.key.key);
                     if(k_code != -1) {
                         chipState.keys[k_code] = true;
                     }
@@ -390,7 +426,7 @@ private:
                 }
 
                 case SDL_EVENT_KEY_UP: {
-                    uint8_t k_code = mapKey(event.key.key);
+                    int k_code = mapKey(event.key.key);
                     if (k_code != -1) {
                         chipState.keys[k_code] = false;                        
                     }
@@ -427,17 +463,27 @@ private:
     double last = 0.0;
 
     double cpu_accumulated_time = 0.0;
+    double stdt_accumulated_time = 0.0;
 
     void execute_program() {
         if (last == 0.0) last = SDL_GetTicks() / 1000.0;
         double cur = SDL_GetTicks() / 1000.0;
         double dt = cur - last;
         last = cur;
-        cpu_accumulated_time += dt;
 
+        // instructions
+        cpu_accumulated_time += dt;
         while (cpu_accumulated_time > cpuStep) {
             chipState.step();
             cpu_accumulated_time -= cpuStep;
+        }
+
+        // dt & st
+        stdt_accumulated_time += dt;
+        while (stdt_accumulated_time > stdtStep) {
+            if (chipState.st > 0) chipState.st--;
+            if (chipState.dt > 0) chipState.dt--;
+            stdt_accumulated_time -= stdtStep;
         }
     }
 
@@ -457,6 +503,15 @@ private:
         ImGui::Begin("Display", nullptr, ImGuiWindowFlags_NoResize);
         ImGui::PopStyleVar();
         ImGui::Image((ImTextureID)(intptr_t)display_texture.m_id, ImVec2(scale * fb_x, display_h));
+        ImGui::End();
+
+        // debug
+        ImGui::Begin("Debug"); // 121a 3000 f007
+        ImGui::Text("pc: %i", chipState.pc);
+        ImGui::Text("op: %x", chipState.getopcode());
+        for (int i = 0; i <= 0xF; ++i) {
+            ImGui::Text("V%i: %i", i, chipState.registers[i]);
+        }
         ImGui::End();
     };
 
