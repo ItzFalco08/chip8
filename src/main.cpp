@@ -11,6 +11,10 @@
 #include "backends/imgui_impl_opengl3.h"
 #include "backends/imgui_impl_sdl3.h"
 
+#ifndef ROOT_DIR
+#define ROOT_DIR "../../" // so that vs code doesn't yell at me
+#endif
+
 // globals
 int scale = 10; // pixel scale
 const int fb_x = 64;
@@ -346,27 +350,30 @@ class EmuApp {
     bool running = true;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
     gldisplaytexture_t display_texture;
-
+    SDL_AudioSpec spec{};
+    uint8_t* data = nullptr;
+    uint32_t length{};
+    SDL_AudioStream* stream = nullptr;
 public:
     void run() {
         const char* rom = "Pong.ch8";
         chipState.init(rom);
 
-        init_window();
+        init_sdl();
         init_imgui();
         main_loop();
     };
 private:
 
-    void init_window() {
+    void init_sdl() {
         // SDL + OpenGL init
-        if (!SDL_Init(SDL_INIT_VIDEO)) throw SDL_GetError();
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) throw SDL_GetError();
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
                             SDL_GL_CONTEXT_PROFILE_CORE);
 
-        window = SDL_CreateWindow( "chip8 emulator", 1024, 512, SDL_WINDOW_OPENGL );
+        window = SDL_CreateWindow("chip8 emulator", 1024, 512, SDL_WINDOW_OPENGL );
 
         if (!window) {
             SDL_Quit();
@@ -388,6 +395,15 @@ private:
         if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) { throw "Failed to initialize GLAD"; }
 
         display_texture = gldisplaytexture_t(fb_x, fb_y);
+
+        // sound
+        if(!SDL_LoadWAV(ROOT_DIR "resources/beep.wav", &spec, &data, &length)) {
+            std::cerr << SDL_GetError() << '\n';
+        }
+        stream = SDL_OpenAudioDeviceStream( SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr );
+        if (!stream) {
+            std::cerr << SDL_GetError() << '\n';
+        }
     }
 
     void init_imgui() {
@@ -446,6 +462,7 @@ private:
 
             // draw
             execute_program();
+            handle_sound();
             draw_imgui();
             
             ImGui::Render();
@@ -514,6 +531,18 @@ private:
         }
         ImGui::End();
     };
+
+    void handle_sound() {
+        if (chipState.st > 0) {
+            SDL_ResumeAudioStreamDevice(stream);
+            
+            if (SDL_GetAudioStreamQueued(stream) == 0) {
+                SDL_PutAudioStreamData(stream, data, length);
+            }     
+        } else {
+            SDL_FlushAudioStream(stream);
+        }
+    }
 
     void init_imgui_theme() {
         // Excellency style by gonzaloivan121 from ImThemes

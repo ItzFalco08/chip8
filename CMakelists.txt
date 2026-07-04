@@ -25,3 +25,9 @@ add_executable(chip8emulator ${SRC_FILES})
 # libraries
 target_link_libraries(chip8emulator PRIVATE SDL3::SDL3 glad imgui)
 target_include_directories(chip8emulator PRIVATE ${SDL3_INCLUDE_DIRS})
+
+# macros
+target_compile_definitions(
+	chip8emulator PRIVATE 
+	ROOT_DIR="../../"
+)
